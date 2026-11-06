@@ -1,0 +1,8 @@
+numpy==2.3.3
+h5py==3.16.0
+fsspec==2026.9.0
+aiohttp==3.14.5
+pyproj==3.8.0
+pillow==11.3.0
+scipy==1.18.1
+eccodes==2.50.0

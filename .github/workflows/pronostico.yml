@@ -1,0 +1,74 @@
+# Cada media hora mira si hay corrida nueva del WRF (SMN) o del ICON (DWD); si la hay, arma las imágenes y las publica
+# en GitHub Pages (queda solo la última corrida). Si algo falla, GitHub manda el mail de «run failed».
+name: Pronóstico
+
+on:
+  schedule:
+    - cron: "17,47 * * * *"
+    - cron: "5 12 * * *" # una vez por día: si la última corrida del WRF tiene más de 18 h, falla para que llegue el mail
+  workflow_dispatch:
+    inputs:
+      forzar:
+        description: Armar aunque las corridas sean las ya publicadas
+        type: boolean
+        default: false
+
+concurrency:
+  group: pronostico
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  ver:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: write
+    outputs:
+      cambio: ${{ steps.ver.outputs.cambio }}
+      wrf: ${{ steps.ver.outputs.wrf }}
+      icon: ${{ steps.ver.outputs.icon }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: ver
+        run: python3 pronostico.py ver "https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/meta.json" ${{ inputs.forzar && '--forzar' || '' }} >> "$GITHUB_OUTPUT"
+      # GitHub apaga los horarios de un repo público después de 60 días sin actividad: esto lo vuelve a habilitar.
+      - name: Mantener el horario
+        run: gh api -X PUT "repos/${{ github.repository }}/actions/workflows/pronostico.yml/enable"
+        env:
+          GH_TOKEN: ${{ github.token }}
+      - name: Avisar si la corrida está vieja
+        if: github.event.schedule == '5 12 * * *' && steps.ver.outputs.viejo == '1'
+        run: |
+          echo "::error::La última corrida del WRF tiene más de 18 h (o no se encontró): la página oculta el pronóstico."
+          exit 1
+
+  armar:
+    needs: ver
+    if: needs.ver.outputs.cambio == '1'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.publicar.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - run: python pronostico.py armar sitio --wrf "${{ needs.ver.outputs.wrf }}" --icon "${{ needs.ver.outputs.icon }}"
+      - run: cp README.md sitio/
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: sitio
+      - id: publicar
+        uses: actions/deploy-pages@v4
