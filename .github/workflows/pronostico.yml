@@ -4,7 +4,7 @@ name: Pronóstico
 
 on:
   schedule:
-    - cron: "17,47 * * * *"
+    - cron: "10,40 * * * *" # lejos de la hora en punto: ahí GitHub saltea más corridas programadas
     - cron: "5 12 * * *" # una vez por día: si la última corrida del WRF tiene más de 18 h, falla para que llegue el mail
   workflow_dispatch:
     inputs:
