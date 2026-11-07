@@ -72,3 +72,32 @@ jobs:
           path: sitio
       - id: publicar
         uses: actions/deploy-pages@v5
+
+  # Cada vuelta suma a la planilla acierto.csv (rama «datos», fuera del historial del código) las horas terminadas:
+  # cuánto coincidió la lluvia del WRF con la del radar. La página la lee de raw.githubusercontent.com.
+  medir:
+    if: github.event.schedule != '5 12 * * *'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7
+        with:
+          ref: datos
+          path: datos
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - run: python pronostico.py medir datos/acierto.csv
+      - name: Guardar la planilla
+        working-directory: datos
+        run: |
+          git add acierto.csv
+          if git diff --cached --quiet; then exit 0; fi
+          git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+            commit -q -m "Acierto del pronóstico hasta la hora $(tail -n 1 acierto.csv | cut -d, -f1) UTC"
+          git push -q
