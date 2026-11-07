@@ -10,6 +10,7 @@
 import datetime as dt
 import json
 import math
+import re
 import sys
 import time
 import urllib.error
@@ -403,10 +404,17 @@ def medir(archivo):
         # Sin la lista (el radar o la página caídos) no falla: las horas se miden en otra vuelta, mientras sigan en ella.
         print(f"medir: sin la lista del radar ({e!r})", file=sys.stderr)
         return
-    cuadros = sorted(
-        (dt.datetime.strptime(dia + png[:6], "%Y%m%d%H%M%S").replace(tzinfo=dt.timezone.utc), f"{dia}/{png}")
-        for dia, pngs in lista.items() for png in pngs
-    )
+    # Como leerLista de src/radar/cuadros.ts: la reflectividad es `HHMMSS.png` o, desde el 07/11/2026, `HHMMSS_dbz.png`
+    # (la misma imagen). Granizo y manga no van, y una hora con los dos nombres cuenta una vez (el nuevo).
+    por_hora = {}
+    for dia, pngs in lista.items():
+        for png in pngs:
+            if not re.fullmatch(r"\d{6}(_dbz)?\.png", png):
+                continue
+            t = dt.datetime.strptime(dia + png[:6], "%Y%m%d%H%M%S").replace(tzinfo=dt.timezone.utc)
+            if t not in por_hora or png.endswith("_dbz.png"):
+                por_hora[t] = f"{dia}/{png}"
+    cuadros = sorted(por_hora.items())
     if not cuadros:
         print("medir: la lista del radar vino vacía", file=sys.stderr)
         return
