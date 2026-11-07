@@ -302,7 +302,7 @@ def armar(salida, wrf, icon, plazos):
 # - El pronóstico: la lluvia de esa hora del WRF, de la última corrida que ya estaba publicada una hora antes de que
 #   empiece (completa ~2 h 40 después de su hora y publicada hasta ~50 min más tarde). Lluvia es 0,5 mm o más, lo que
 #   pinta el mapa.
-# - Cada hora, el alcance del radar (250 km) se parte en cajas de 20 km: una tormenta corrida unos km cuenta igual.
+# - Cada hora, lo que el radar ve bien (200 km) se parte en cajas de 20 km: una tormenta corrida unos km cuenta igual.
 #   Por caja: los dos vieron lluvia (ambos), solo el pronóstico o solo el radar. Las cajas sin lluvia en ninguno no
 #   cuentan: casi siempre no llueve y «acertó que no llovía» no dice nada.
 
@@ -318,12 +318,14 @@ ESCALA_RADAR = [
 NIVEL_LLUVIA = 1  # «Débil» o más.
 LLUVIA_MM = 0.5
 CAJA = 10  # celdas de 2 km por lado: cajas de 20 km.
-ALCANCE_KM = 250
+# Hasta 200 km: más lejos el haz pasa alto y no ve la lluvia débil (del 6 al 7/11, entre 200 y 250 km el radar no vio
+# lluvia en 30 horas y el modelo marcó 640 cajas: contaban como errores del pronóstico sin serlo).
+ALCANCE_KM = 200
 ESPERA_CORRIDA_H = 4
 MIN_CUADROS = 15  # de ~30 por hora: con menos, el radar estuvo parado esa hora y no se mide.
 PARADO_H = 6  # una hora con imágenes que no bajaron se reintenta hasta esto; después queda como sin radar.
 TOPE_HORAS = 30  # por vuelta, para que una vuelta no se alargue.
-COLUMNAS = ["hora", "corrida", "plazo", "cuadros", "ambos", "solo_pronostico", "solo_radar", "cajas"]
+COLUMNAS = ["hora", "corrida", "plazo", "cuadros", "ambos", "solo_pronostico", "solo_radar", "cajas", "km"]
 
 
 def _alcance():
@@ -390,7 +392,8 @@ def medir(archivo):
     filas = []
     if ruta.exists():
         with ruta.open(encoding="utf-8", newline="") as f:
-            filas = list(csv.DictReader(f))
+            # Las filas medidas con otro alcance se descartan: se vuelven a medir las que sigan en la lista del radar.
+            filas = [x for x in csv.DictReader(f) if x.get("km") == str(ALCANCE_KM)]
     hechas = {f["hora"] for f in filas}
     ahora = dt.datetime.now(dt.timezone.utc)
 
@@ -439,7 +442,7 @@ def medir(archivo):
     for h in horas:
         rutas = [r for t, r in cuadros if h <= t < h + dt.timedelta(hours=1)]
         vieja = ahora - h > dt.timedelta(hours=PARADO_H + 1)
-        fila = {"hora": nombre(h), "corrida": "", "plazo": "", "cuadros": len(rutas)}
+        fila = {"hora": nombre(h), "corrida": "", "plazo": "", "cuadros": len(rutas), "km": ALCANCE_KM}
         c, plazo = corridas[h]
         if len(rutas) >= MIN_CUADROS and c is None and not vieja:
             continue  # todavía no está la corrida en S3: se reintenta
