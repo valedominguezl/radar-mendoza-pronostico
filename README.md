@@ -21,3 +21,9 @@ pronóstico o solo el radar. Hora en UTC, la de su comienzo. Solo mide: no corri
 
 Probar en la compu: `pip install -r requirements.txt` y
 `python pronostico.py armar sitio --wrf AAAAMMDDHH --icon AAAAMMDDHH --plazos 0,1,24`.
+
+**Radar de repuesto (RMA19):** otra Action (`rma19.yml`, cada 10 min) corre `bash rma19.sh rma19` y guarda en la rama
+`rma19` las imágenes del radar del SMN en Santa Rosa, Mendoza (RMA19, [SINARAME](https://radares.hidricosargentina.gob.ar/)),
+tal como salen de su caché: `AAAAMMDD/hhmm.png`, hora de Mendoza. Es el repuesto de Radar Mendoza cuando el radar de
+Contingencias no publica; se guardan 2 semanas para medir cuántas imágenes da y cuánto acuerda con Contingencias.
+`vueltas.csv` anota qué tramo revisó cada vuelta.

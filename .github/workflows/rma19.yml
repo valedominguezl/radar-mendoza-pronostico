@@ -1,0 +1,35 @@
+# Cada 10 minutos guarda en la rama «rma19» las imágenes nuevas del radar del SMN en Santa Rosa (RMA19): el repuesto
+# de Radar Mendoza. Se miden 2 semanas (desde el 09/11/2026) para ver cuántas da y si acuerda con Contingencias.
+name: RMA19
+
+on:
+  schedule:
+    - cron: "5,15,25,35,45,55 * * * *" # lejos de la hora en punto y de la media: ahí GitHub saltea más corridas
+  workflow_dispatch:
+
+concurrency:
+  group: rma19
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  guardar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7
+        with:
+          ref: rma19
+          path: rma19
+      - run: bash rma19.sh rma19
+      - name: Guardar las imágenes
+        working-directory: rma19
+        run: |
+          git add -A
+          if git diff --cached --quiet; then exit 0; fi
+          git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+            commit -q -m "RMA19 hasta $(tail -n 1 vueltas.csv | cut -d, -f3) (hora de Mendoza)"
+          git push -q
