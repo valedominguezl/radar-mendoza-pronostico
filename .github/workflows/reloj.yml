@@ -1,0 +1,41 @@
+# Reloj: GitHub larga las corridas programadas de este repo cada 4 a 11 h en vez de cada 10 o 30 min, y a RMA19 nunca.
+# Este trabajo queda despierto casi 6 h (el tope de un trabajo): larga RMA19 a los :05, :15, … y el Pronóstico a los
+# :10 y :40, y antes del tope se vuelve a largar a sí mismo (un workflow_dispatch con el token de la Action sí arma una
+# corrida nueva). En un repo público no gasta minutos. Si la cadena se corta, el cron de abajo la vuelve a prender
+# cuando GitHub lo largue; los crons de cada Action siguen como estaban. Para pararlo: gh workflow disable reloj.yml
+name: Reloj
+
+on:
+  schedule:
+    - cron: "10 */2 * * *"
+  workflow_dispatch:
+
+# Una sola vuelta a la vez: la que llega mientras otra corre queda esperando y la reemplaza la siguiente.
+concurrency:
+  group: reloj
+  cancel-in-progress: false
+
+permissions:
+  actions: write
+
+jobs:
+  latir:
+    runs-on: ubuntu-latest
+    timeout-minutes: 358
+    env:
+      GH_TOKEN: ${{ github.token }}
+      R: ${{ github.repository }}
+    steps:
+      - name: Largar las Actions durante 350 min
+        run: |
+          fin=$(( $(date +%s) + 350 * 60 ))
+          while [ "$(date +%s)" -lt "$fin" ]; do
+            m=$(( 10#$(date -u +%M) ))
+            # Una falla al largar (RMA19 ya apagada, GitHub caído un momento) no corta el reloj.
+            if [ $(( m % 10 )) -eq 5 ]; then gh workflow run rma19.yml -R "$R" || true; fi
+            if [ "$m" -eq 10 ] || [ "$m" -eq 40 ]; then gh workflow run pronostico.yml -R "$R" || true; fi
+            sleep $(( 60 - 10#$(date -u +%S) ))
+          done
+      - name: Volver a largarse
+        if: ${{ !cancelled() }}
+        run: gh workflow run reloj.yml -R "$R" --ref main
