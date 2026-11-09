@@ -13,19 +13,35 @@ concurrency:
 
 permissions:
   contents: write
+  actions: write # Para apagarse solo al terminar la medición
 
 jobs:
   guardar:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
+      # La medición dura 2 semanas: desde el 24/11 00:00 de Mendoza (03:00 UTC) la Action se apaga sola. Para seguir,
+      # cambiar la fecha y volver a prenderla (gh workflow enable rma19.yml)
+      - name: Fin de la medición
+        id: fin
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ "$(date -u +%Y%m%d%H)" -ge 2026112403 ]; then
+            gh workflow disable rma19.yml -R "$GITHUB_REPOSITORY"
+            echo "listo=1" >> "$GITHUB_OUTPUT"
+          fi
       - uses: actions/checkout@v7
+        if: steps.fin.outputs.listo != '1'
       - uses: actions/checkout@v7
+        if: steps.fin.outputs.listo != '1'
         with:
           ref: rma19
           path: rma19
       - run: bash rma19.sh rma19
+        if: steps.fin.outputs.listo != '1'
       - name: Guardar las imágenes
+        if: steps.fin.outputs.listo != '1'
         working-directory: rma19
         run: |
           git add -A
