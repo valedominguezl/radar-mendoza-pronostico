@@ -1,4 +1,4 @@
-# Pronóstico para Radar Mendoza: baja la última corrida del WRF del SMN (lluvia, temperatura y viento) y del ICON del
+# Pronóstico para Radar Mendoza: baja la última corrida del WRF del SMN (lluvia) y del ICON del
 # DWD (nubes), recorta el cuadro del radar, lo pasa a Mercator y guarda un PNG gris de 8 bits por capa y hora, más
 # meta.json con las corridas, las horas y cómo pasar cada byte a su unidad (valor = desde + paso × byte).
 #
@@ -38,9 +38,6 @@ ALTO = round(ANCHO * (my(NORTE) - my(SUR)) / (math.radians(ESTE - OESTE) * R))
 # Cómo leer cada byte: valor = desde + paso × byte. 255 es el tope (lo que pasa, queda en 255).
 CAPAS = {
     "lluvia": {"desde": 0, "paso": 0.1, "unidad": "mm en la hora"},
-    "temp": {"desde": -40, "paso": 0.5, "unidad": "°C a 2 m"},
-    "viento": {"desde": 0, "paso": 1, "unidad": "km/h a 10 m"},
-    "rumbo": {"desde": 0, "paso": 2, "unidad": "grados, de dónde viene"},
     "nubes": {"desde": 0, "paso": 1, "unidad": "% del cielo cubierto"},
 }
 
@@ -130,8 +127,9 @@ _LCC = None
 
 
 def leer_wrf(args):
-    # Un plazo del WRF: lee por rango solo las cuatro variables (cada una es un bloque zlib del campo entero) y
-    # devuelve el recorte en Mercator, vecino más cercano.
+    # Un plazo del WRF: lee por rango solo la lluvia acumulada (un bloque zlib del campo entero) y devuelve el
+    # recorte en Mercator, vecino más cercano. La página no usa temperatura ni viento; pedirlos hacía caer la corrida
+    # entera cuando el SMN publicaba un plazo sin alguna de esas variables.
     corrida, plazo = args
     global _LCC
     import fsspec
@@ -151,7 +149,7 @@ def leer_wrf(args):
                 x, y = h["x"][:], h["y"][:]
                 ix = np.rint((LX - x[0]) / (x[1] - x[0])).astype(int)
                 iy = np.rint((LY - y[0]) / (y[1] - y[0])).astype(int)
-                return plazo, {k: h[k][0][iy, ix].astype("float32") for k in ("PP", "T2", "magViento10", "dirViento10")}
+                return plazo, {"PP": h["PP"][0][iy, ix].astype("float32")}
         except Exception:
             if n == 2:
                 raise
@@ -247,14 +245,11 @@ def armar(salida, wrf, icon, plazos):
                 f = campos[p]
                 if p > 0:
                     guardar(sal / "wrf", t, "lluvia", np.maximum(f["PP"] - campos[p - 1]["PP"], 0))
-                guardar(sal / "wrf", t, "temp", f["T2"])
-                guardar(sal / "wrf", t, "viento", f["magViento10"] * 3.6)
-                guardar(sal / "wrf", t, "rumbo", f["dirViento10"])
                 horas.append(nombre(t))
             meta["wrf"] = {
                 "corrida": wrf,
                 "horas": horas,
-                "capas": ["lluvia", "temp", "viento", "rumbo"],
+                "capas": ["lluvia"],
                 "sin_lluvia": [horas[0]] if plazos[0] == 0 else [],
                 "fuente": "Pronóstico del SMN (modelo WRF)",
                 "enlace": "https://registry.opendata.aws/smn-ar-wrf-dataset/",
