@@ -40,6 +40,12 @@ jobs:
         run: gh api -X PUT "repos/${{ github.repository }}/actions/workflows/pronostico.yml/enable"
         env:
           GH_TOKEN: ${{ github.token }}
+      # Latido para Healthchecks.io: si las vueltas se paran (Reloj o el cron de GitHub), avisa por mail. Sin el
+      # secreto LATIDO_URL no hace nada; si Healthchecks no contesta, la vuelta sigue igual.
+      - name: Latido
+        env:
+          LATIDO_URL: ${{ secrets.LATIDO_URL }}
+        run: '[ -z "$LATIDO_URL" ] || curl -fsS -m 10 --retry 3 -o /dev/null "$LATIDO_URL" || true'
       - name: Avisar si la corrida está vieja
         if: github.event.schedule == '5 12 * * *' && steps.ver.outputs.viejo == '1'
         run: |
