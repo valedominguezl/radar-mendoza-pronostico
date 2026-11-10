@@ -19,7 +19,8 @@ WRF de la última corrida publicada una hora antes, 0,5 mm o más, y el radar ya
 pronóstico o solo el radar. Hora en UTC, la de su comienzo. Solo mide: no corrige el modelo.
 
 Probar en la compu: `pip install -r requirements.txt` y
-`python pronostico.py armar sitio --wrf AAAAMMDDHH --icon AAAAMMDDHH --plazos 0,1,24`.
+`python pronostico.py armar sitio --wrf AAAAMMDDHH --icon AAAAMMDDHH --plazos 0,1,24`. Pruebas:
+`python -m unittest discover -s tests` (corren antes de cada publicación).
 
 **Radar de repuesto (RMA19):** otra Action (`rma19.yml`, cada 10 min) corre `bash rma19.sh rma19` y guarda en la rama
 `rma19` las imágenes del radar del SMN en Santa Rosa, Mendoza (RMA19, [SINARAME](https://radares.hidricosargentina.gob.ar/)),

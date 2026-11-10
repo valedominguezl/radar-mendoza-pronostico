@@ -93,18 +93,31 @@ def ultima(completa, ahora):
 
 def ver(url_meta, forzar):
     ahora = dt.datetime.now(dt.timezone.utc)
-    wrf = ultima(lambda c: url_wrf(c, PLAZOS[-1]), ahora)
-    icon = ultima(lambda c: url_icon(c, PLAZOS[-1]), ahora)
     try:
         crudo = pedir(url_meta, tiempo=20)
         antes = json.loads(crudo) if crudo else {}
     except (ValueError, OSError):
         antes = {}
     ya = ((antes.get("wrf") or {}).get("corrida"), (antes.get("icon") or {}).get("corrida"))
-    nuevas = (wrf and nombre(wrf), icon and nombre(icon))
+    fallo = []
+
+    # Un modelo que no contesta (el S3 del SMN o el DWD caídos) no tira la vuelta: de ese queda la corrida ya
+    # publicada y el otro sigue solo (antes, el ICON caído frenaba también el WRF nuevo).
+    def buscar(fuente, completa, publicada):
+        try:
+            c = ultima(completa, ahora)
+            return c and nombre(c)
+        except Exception as e:
+            fallo.append(fuente)
+            print(f"::warning::{fuente} no contestó ({e!r}): queda la corrida publicada", file=sys.stderr)
+            return publicada
+
+    nuevas = (buscar("WRF", lambda c: url_wrf(c, PLAZOS[-1]), ya[0]), buscar("ICON", lambda c: url_icon(c, PLAZOS[-1]), ya[1]))
     hay = any(nuevas)
-    cambio = hay and (forzar or nuevas != ya)
-    viejo = wrf is None or (ahora - wrf).total_seconds() > VIEJO_H * 3600
+    # Sin lo publicado no se sabe qué corrida dejar del que no contestó: esta vuelta no cambia nada.
+    cambio = hay and (forzar or nuevas != ya) and not (fallo and not antes)
+    wrf = nuevas[0] and de_nombre(nuevas[0])
+    viejo = not wrf or (ahora - wrf).total_seconds() > VIEJO_H * 3600
     print(f"wrf={nuevas[0] or ''}")
     print(f"icon={nuevas[1] or ''}")
     print(f"cambio={int(bool(cambio))}")
@@ -157,8 +170,11 @@ def leer_wrf(args):
                 if "PP" not in h:
                     raise Incompleto(f"plazo {plazo} sin PP")
                 return plazo, {"PP": h["PP"][0][iy, ix].astype("float32")}
-        except Exception:
+        except Exception as e:
             if n == 2:
+                # Un plazo que todavía no está (404) es el SMN subiendo la corrida, como el que llega sin PP.
+                if isinstance(e, FileNotFoundError):
+                    raise Incompleto(f"plazo {plazo} todavía no está") from e
                 raise
             time.sleep(10 * (n + 1))
 
@@ -217,7 +233,26 @@ def guardar(carpeta, t, capa, valor):
     Image.fromarray(b).save(carpeta / f"{nombre(t)}-{capa}.png", optimize=True)
 
 
-def armar(salida, wrf, icon, plazos):
+def copiar_icon(url_meta, sal):
+    # Las nubes de la corrida ya publicada, bajadas tal cual del sitio (meta y PNG). None si no se pudo.
+    if not url_meta:
+        return None
+    try:
+        icon = json.loads(pedir(url_meta, tiempo=20) or b"{}").get("icon")
+        if not icon or not icon.get("horas"):
+            return None
+        base = url_meta.rsplit("/", 1)[0]
+        for h in icon["horas"]:
+            datos = pedir(f"{base}/icon/{h}-nubes.png", tiempo=20)
+            if not datos:
+                return None
+            (sal / "icon" / f"{h}-nubes.png").write_bytes(datos)
+        return icon
+    except (ValueError, OSError):
+        return None
+
+
+def armar(salida, wrf, icon, plazos, antes=None):
     from concurrent.futures import ProcessPoolExecutor
     from pathlib import Path
 
@@ -290,7 +325,13 @@ def armar(salida, wrf, icon, plazos):
             }
             print(f"ICON {icon}: {len(horas)} horas en {time.time() - t0:.0f} s", file=sys.stderr)
         except Exception as e:
-            errores.append(f"ICON {icon}: {e!r}")
+            # El ICON caído no frena el WRF nuevo: quedan las nubes ya publicadas. Si tampoco se pueden copiar, falla.
+            copia = copiar_icon(antes, sal)
+            if copia:
+                meta["icon"] = copia
+                print(f"::warning::ICON {icon}: {e!r}; quedan las nubes de la corrida {copia['corrida']}", file=sys.stderr)
+            else:
+                errores.append(f"ICON {icon}: {e!r}")
 
     (sal / "meta.json").write_text(json.dumps(meta, ensure_ascii=False, indent=1), encoding="utf-8")
     (sal / ".nojekyll").write_text("")
@@ -416,7 +457,8 @@ def medir(archivo):
         lista = json.loads(pedir(f"{RADAR_API}/cuadros", tiempo=30) or b"{}")
     except (ValueError, OSError) as e:
         # Sin la lista (el radar o la página caídos) no falla: las horas se miden en otra vuelta, mientras sigan en ella.
-        print(f"medir: sin la lista del radar ({e!r})", file=sys.stderr)
+        # Queda como aviso en la corrida (con el 403 de Contingencias, acierto.csv no crece).
+        print(f"::warning::medir: sin la lista del radar ({e!r})", file=sys.stderr)
         return
     # Como leerLista de src/radar/cuadros.ts: la reflectividad es `HHMMSS.png` o, desde el 07/11/2026, `HHMMSS_dbz.png`
     # (la misma imagen). Granizo y manga no van, y una hora con los dos nombres cuenta una vez (el nuevo).
@@ -455,10 +497,19 @@ def medir(archivo):
         except Exception:
             return None
 
-    corridas = {h: _corrida_para(h) for h in horas}
+    # Un archivo del WRF que no se pudo leer (o el S3 que no contesta) no tira la medición entera: esa hora se
+    # reintenta en otra vuelta y, pasadas PARADO_H, queda sin corrida.
+    def corrida_o_nada(h):
+        try:
+            return _corrida_para(h)
+        except Exception as e:
+            print(f"medir: sin la corrida de {nombre(h)} ({e!r})", file=sys.stderr)
+            return None, None
+
+    corridas = {h: corrida_o_nada(h) for h in horas}
     archivos = sorted({(c, p) for c, plazo in corridas.values() if c for p in (plazo - 1, plazo)})
     with ProcessPoolExecutor(4) as ex:
-        wrf = dict(((c, p), campos["PP"]) for (c, p), campos in zip(archivos, ex.map(_leer_pp, archivos)))
+        wrf = {cp: pp for cp, pp in zip(archivos, ex.map(_leer_pp, archivos)) if pp is not None}
 
     nuevas = []
     for h in horas:
@@ -466,6 +517,10 @@ def medir(archivo):
         vieja = ahora - h > dt.timedelta(hours=PARADO_H + 1)
         fila = {"hora": nombre(h), "corrida": "", "plazo": "", "cuadros": len(rutas), "km": ALCANCE_KM}
         c, plazo = corridas[h]
+        if c is not None and not {(c, plazo - 1), (c, plazo)} <= wrf.keys():
+            if not vieja:
+                continue  # un archivo del WRF no se pudo leer: se reintenta
+            c = None
         if len(rutas) >= MIN_CUADROS and c is None and not vieja:
             continue  # todavía no está la corrida en S3: se reintenta
         if len(rutas) >= MIN_CUADROS and c is not None:
@@ -497,7 +552,12 @@ def medir(archivo):
 
 
 def _leer_pp(args):
-    return leer_wrf(args)[1]
+    # La lluvia de un plazo, o None si no se pudo leer (medir reintenta esa hora en otra vuelta).
+    try:
+        return leer_wrf(args)[1]["PP"]
+    except Exception as e:
+        print(f"medir: WRF {nombre(args[0])} plazo {args[1]} sin leer ({e!r})", file=sys.stderr)
+        return None
 
 
 if __name__ == "__main__":
@@ -509,6 +569,6 @@ if __name__ == "__main__":
     elif a[:1] == ["armar"]:
         opc = dict(zip(a[2::2], a[3::2]))
         plazos = [int(x) for x in opc["--plazos"].split(",")] if "--plazos" in opc else list(PLAZOS)
-        armar(a[1], opc.get("--wrf"), opc.get("--icon"), plazos)
+        armar(a[1], opc.get("--wrf"), opc.get("--icon"), plazos, opc.get("--antes"))
     else:
-        sys.exit("uso: ver URL | armar SALIDA --wrf AAAAMMDDHH --icon AAAAMMDDHH | medir acierto.csv")
+        sys.exit("uso: ver URL | armar SALIDA --wrf AAAAMMDDHH --icon AAAAMMDDHH [--antes URL] | medir acierto.csv")
