@@ -65,12 +65,17 @@ jobs:
           python-version: "3.12"
           cache: pip
       - run: pip install -r requirements.txt
-      - run: python pronostico.py armar sitio --wrf "${{ needs.ver.outputs.wrf }}" --icon "${{ needs.ver.outputs.icon }}"
-      - run: cp README.md sitio/
-      - uses: actions/upload-pages-artifact@v5
+      - id: armar
+        run: python pronostico.py armar sitio --wrf "${{ needs.ver.outputs.wrf }}" --icon "${{ needs.ver.outputs.icon }}"
+      # Con un archivo del SMN a medio subir, armar termina bien pero sin publicar: queda lo anterior.
+      - if: steps.armar.outputs.listo == '1'
+        run: cp README.md sitio/
+      - if: steps.armar.outputs.listo == '1'
+        uses: actions/upload-pages-artifact@v5
         with:
           path: sitio
       - id: publicar
+        if: steps.armar.outputs.listo == '1'
         uses: actions/deploy-pages@v5
 
   # Cada vuelta suma a la planilla acierto.csv (rama «datos», fuera del historial del código) las horas terminadas:

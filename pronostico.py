@@ -10,6 +10,7 @@
 import datetime as dt
 import json
 import math
+import os
 import re
 import sys
 import time
@@ -126,6 +127,10 @@ def _grilla_mercator():
 _LCC = None
 
 
+class Incompleto(Exception):
+    """El SMN publicó el archivo de un plazo sin alguna variable (lo sube de a partes): la vuelta siguiente lo encuentra."""
+
+
 def leer_wrf(args):
     # Un plazo del WRF: lee por rango solo la lluvia acumulada (un bloque zlib del campo entero) y devuelve el
     # recorte en Mercator, vecino más cercano. La página no usa temperatura ni viento; pedirlos hacía caer la corrida
@@ -149,6 +154,8 @@ def leer_wrf(args):
                 x, y = h["x"][:], h["y"][:]
                 ix = np.rint((LX - x[0]) / (x[1] - x[0])).astype(int)
                 iy = np.rint((LY - y[0]) / (y[1] - y[0])).astype(int)
+                if "PP" not in h:
+                    raise Incompleto(f"plazo {plazo} sin PP")
                 return plazo, {"PP": h["PP"][0][iy, ix].astype("float32")}
         except Exception:
             if n == 2:
@@ -230,6 +237,7 @@ def armar(salida, wrf, icon, plazos):
         "icon": None,
     }
     errores = []
+    incompletos = []
 
     if wrf:
         t0 = time.time()
@@ -255,6 +263,8 @@ def armar(salida, wrf, icon, plazos):
                 "enlace": "https://registry.opendata.aws/smn-ar-wrf-dataset/",
             }
             print(f"WRF {wrf}: {len(horas)} horas en {time.time() - t0:.0f} s", file=sys.stderr)
+        except Incompleto as e:
+            incompletos.append(f"WRF {wrf}: {e}")
         except Exception as e:
             errores.append(f"WRF {wrf}: {e!r}")
 
@@ -288,6 +298,15 @@ def armar(salida, wrf, icon, plazos):
     print(f"salida {peso / 1e6:.1f} MB", file=sys.stderr)
     if errores:
         sys.exit("falló: " + "; ".join(errores))
+    # Un archivo a medio subir no es una falla: esta vuelta no publica (queda lo anterior, sin mail) y la próxima, a
+    # los 30 min, lo vuelve a intentar (ver sigue en «cambio» mientras no se publique la corrida nueva).
+    listo = not incompletos
+    if incompletos:
+        print("::warning::sin publicar, el SMN todavía está subiendo: " + "; ".join(incompletos), file=sys.stderr)
+    salida_gh = os.environ.get("GITHUB_OUTPUT")
+    if salida_gh:
+        with open(salida_gh, "a", encoding="utf-8") as f:
+            f.write(f"listo={int(listo)}\n")
 
 
 # --- medir (necesita requirements.txt) ---
