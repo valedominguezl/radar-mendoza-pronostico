@@ -64,6 +64,22 @@ class Medir(unittest.TestCase):
                 contextlib.redirect_stderr(io.StringIO()):
             self.assertIsNone(pronostico._leer_pp((dt.datetime(2026, 11, 10, tzinfo=dt.timezone.utc), 5)))
 
+    def test_rma19_como_la_pagina(self):
+        # La misma imagen del repuesto (10/11 23:00 de Mendoza): cruda del SMN y como la dio /api/rma19.
+        datos = Path(__file__).with_name("datos")
+        crudo = pronostico.rma19_lluvia((datos / "rma19-crudo-20261111-0200.png").read_bytes())
+        pagina = pronostico._radar_lluvia((datos / "rma19-pagina-20261111-0200.png").read_bytes(), mitad=False)
+        self.assertGreater(pagina.sum(), 1000)
+        self.assertEqual((crudo != pagina).sum(), 0)
+
+    def test_lista_con_error_queda_vacia(self):
+        # {"error": …} con 200 o una lista rara no tira la medición: ese radar no da horas.
+        for cuerpo in (b'{"error": "radar de repuesto no disponible"}', b'[]', b'{"2026": ["x.png"]}'):
+            with mock.patch.object(pronostico, "pedir", lambda url, **k: cuerpo):
+                self.assertEqual(pronostico._lista("x"), {})
+        with mock.patch.object(pronostico, "pedir", lambda url, **k: b'{"20261111": ["020000.png", "020000_dbz.png"]}'):
+            self.assertEqual(list(pronostico._lista("x").values()), ["20261111/020000_dbz.png"])
+
 
 class CopiarIcon(unittest.TestCase):
     def test_copia_las_nubes_publicadas(self):

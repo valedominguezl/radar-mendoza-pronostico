@@ -5,6 +5,7 @@
 #   python pronostico.py ver URL_DEL_META_PUBLICADO [--forzar]   → renglones clave=valor para GITHUB_OUTPUT
 #   python pronostico.py armar SALIDA --wrf AAAAMMDDHH --icon AAAAMMDDHH [--plazos 0,1,24]
 #   python pronostico.py medir acierto.csv   → suma a la planilla las horas terminadas que falten (ver «medir»)
+#   python pronostico.py fijos CARPETA_RMA19   → rehace rma19-fijos.png con el registro de la rama rma19 (ver «fijos»)
 #
 # «ver» usa solo la biblioteca estándar (corre antes de instalar nada): si las corridas son las ya publicadas, no se arma.
 import datetime as dt
@@ -16,6 +17,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
+from pathlib import Path
 
 WRF = "https://smn-ar-wrf.s3.amazonaws.com/DATA/WRF/DET"
 ICON = "https://opendata.dwd.de/weather/nwp/icon/grib"
@@ -362,8 +364,23 @@ def armar(salida, wrf, icon, plazos, antes=None):
 #   Por caja: los dos vieron lluvia (ambos), solo el pronóstico o solo el radar. Las cajas sin lluvia en ninguno no
 #   cuentan: casi siempre no llueve y «acertó que no llovía» no dice nada.
 
+#   Mientras Contingencias no da imágenes, la hora se mide con el radar de repuesto (RMA19 del SMN, en Santa Rosa), como
+#   lo ve la página (su /api/rma19), alrededor de él y sin sus ecos fijos (rma19-fijos.png, ver «fijos»). La columna
+#   «radar» dice cuál se usó: las dos medidas no son comparables entre sí (otro lugar, otro alcance, otro radar).
+
 RADAR_API = "https://radar-mendoza.vercel.app/api"
 FILTRO = 3  # La versión del filtro de ruido que pide la página (FILTRO en src/radar/cuadros.ts).
+REPUESTO = 1  # La versión del repuesto que pide la página (REPUESTO en src/radar/cuadros.ts).
+FIJOS = Path(__file__).with_name("rma19-fijos.png")
+# Por radar, en el orden en que se eligen: dónde está, sus URL y cuántas imágenes por hora hacen falta (la mitad).
+RADARES = {
+    # ~30 imágenes por hora, ya limpias de ruido: la mitad de arriba de /api/cuadro.
+    "contingencias": dict(lista=f"{RADAR_API}/cuadros", imagen=f"{RADAR_API}/cuadro?ruta={{}}&filtro={FILTRO}",
+                          centro=(LAT, LON), minimo=15, mitad=True),
+    # 6 por hora, crudas: la imagen entera de /api/rma19, con sus ecos fijos sacados (FIJOS).
+    "rma19": dict(lista=f"{RADAR_API}/rma19", imagen=f"{RADAR_API}/rma19?ruta={{}}&v={REPUESTO}",
+                  centro=(-33.259, -68.094), minimo=3, mitad=False),
+}
 # Colores de la escala del radar y su nivel (0 «Muy débil» … 4 «Posible granizo»), como src/radar/niveles.ts.
 ESCALA_RADAR = [
     (0, (72, 61, 139)), (0, (0, 90, 0)), (1, (0, 112, 0)),
@@ -378,20 +395,22 @@ CAJA = 10  # celdas de 2 km por lado: cajas de 20 km.
 # lluvia en 30 horas y el modelo marcó 640 cajas: contaban como errores del pronóstico sin serlo).
 ALCANCE_KM = 200
 ESPERA_CORRIDA_H = 4
-MIN_CUADROS = 15  # de ~30 por hora: con menos, el radar estuvo parado esa hora y no se mide.
-PARADO_H = 6  # una hora con imágenes que no bajaron se reintenta hasta esto; después queda como sin radar.
+PARADO_H = 6  # una hora sin imágenes suficientes o que no bajaron se reintenta hasta esto; después queda sin radar.
 TOPE_HORAS = 30  # por vuelta, para que una vuelta no se alargue.
-COLUMNAS = ["hora", "corrida", "plazo", "cuadros", "ambos", "solo_pronostico", "solo_radar", "cajas", "km"]
+COLUMNAS = ["hora", "corrida", "plazo", "cuadros", "ambos", "solo_pronostico", "solo_radar", "cajas", "km", "radar"]
 
 
-def _alcance():
-    # Las celdas dentro de los 250 km del radar y la caja de 20 km de cada una (como dentroDelAlcance en la página).
+def _alcance(centro, fuera=None):
+    # Las celdas a menos de ALCANCE_KM del radar (como dentroDelAlcance en la página), sin las de `fuera`, y la caja de
+    # 20 km de cada una.
     import numpy as np
 
     MX, MY = _grilla_mercator()
     lat = np.degrees(2 * np.arctan(np.exp(MY / R)) - np.pi / 2)
     lon = np.degrees(MX / R)
-    adentro = np.hypot((lat - LAT) * KLAT, (lon - LON) * KLON) <= ALCANCE_KM
+    adentro = np.hypot((lat - centro[0]) * KLAT, (lon - centro[1]) * KLON) <= ALCANCE_KM
+    if fuera is not None:
+        adentro &= ~fuera
     fila, col = np.indices((ALTO, ANCHO))
     caja = (fila // CAJA) * math.ceil(ANCHO / CAJA) + col // CAJA
     total = math.ceil(ALTO / CAJA) * math.ceil(ANCHO / CAJA)
@@ -400,15 +419,17 @@ def _alcance():
     return adentro, caja, total, dentro
 
 
-def _radar_lluvia(datos):
-    # La mitad de arriba de /api/cuadro (lo limpio) a la grilla de 2 km: True donde hay «Débil» o más.
+def _radar_lluvia(datos, mitad=True):
+    # Una imagen de la página a la grilla de 2 km: True donde hay «Débil» o más. De /api/cuadro va la mitad de arriba
+    # (lo limpio); de /api/rma19, la entera.
     import io
 
     import numpy as np
     from PIL import Image
 
     img = np.asarray(Image.open(io.BytesIO(datos)).convert("RGBA"))
-    img = img[: img.shape[0] // 2]
+    if mitad:
+        img = img[: img.shape[0] // 2]
     alto, ancho = img.shape[:2]
     ys, xs = np.nonzero(img[..., 3] > 0)
     salida = np.zeros((ALTO, ANCHO), bool)
@@ -424,6 +445,82 @@ def _radar_lluvia(datos):
     return salida
 
 
+# --- fijos: los ecos fijos del repuesto ---
+#
+# El repuesto va crudo: la cordillera y el ruido alrededor del radar salen como lluvia casi siempre (en las primeras
+# 34 imágenes, ~2400 celdas en el 90 % o más). Con eso, cada hora sumaría «solo radar» donde no llueve. Un eco fijo es
+# una celda con lluvia en la mitad o más de las imágenes del registro (la rama rma19): ahí no se mide ni el radar ni el
+# pronóstico. Para leer el registro, la imagen cruda se pasa como lo hace api/rma19.ts (aContingencias): la prueba
+# test_rma19_como_la_pagina lo compara con lo que da la página.
+
+FIJO = 0.5
+RMA19_CAJA = (-35.43, -70.672, -31.089, -65.516)  # sur, oeste, norte, este de su imagen (RMA19 en api/rma19.ts)
+ESCALA_SMN = [tuple(int(h[k:k + 2], 16) for k in (0, 2, 4)) for h in (
+    "3d416b 3b4f78 3d5989 3d6595 3772a6 3189bb 25a1cf 4ce132 3ab027 237219 c9d333 d69818 c50017 c1005f cb00cd e2f5ee "
+    "a7ecce 88dfbd").split()]
+LLUVIA_DBZ = 20  # donde empieza «Débil» (ESCALA_DBZ en src/radar/niveles.ts)
+CUADRO_ANCHO, CUADRO_ALTO = 500, 700  # el cuadro de Contingencias al que api/rma19.ts pasa la imagen
+_dbz_vistos = {}
+
+
+def _dbz_smn(rgb):
+    # Como dbzDe de api/rma19.ts: el punto de su escala con el color más parecido, cada 0,1 dBZ (las mismas cuentas).
+    if rgb not in _dbz_vistos:
+        mejor, menor = -15, math.inf
+        for k in range(len(ESCALA_SMN) - 1):
+            a, z = ESCALA_SMN[k], ESCALA_SMN[k + 1]
+            f = 0
+            while f < 1:
+                d = (a[0] + (z[0] - a[0]) * f - rgb[0]) ** 2 + (a[1] + (z[1] - a[1]) * f - rgb[1]) ** 2 \
+                    + (a[2] + (z[2] - a[2]) * f - rgb[2]) ** 2
+                if d < menor:
+                    menor, mejor = d, -15 + (k + f) * 5
+                f += 0.02
+        _dbz_vistos[rgb] = mejor
+    return _dbz_vistos[rgb]
+
+
+def rma19_lluvia(datos):
+    # Una imagen cruda del SMN a la grilla de 2 km, como /api/rma19 seguida de _radar_lluvia: True con LLUVIA_DBZ o más.
+    import io
+
+    import numpy as np
+    from PIL import Image
+
+    img = np.asarray(Image.open(io.BytesIO(datos)).convert("RGBA"))
+    h, w = img.shape[:2]
+    merc = lambda lat: math.log(math.tan(math.pi / 4 + lat * math.pi / 360))  # noqa: E731
+    sur, oeste, norte, este = RMA19_CAJA
+    m = merc(NORTE) + ((np.arange(CUADRO_ALTO) + 0.5) / CUADRO_ALTO) * (merc(SUR) - merc(NORTE))
+    fy = np.floor(((m - merc(norte)) / (merc(sur) - merc(norte))) * h).astype(int)
+    lon = OESTE + ((np.arange(CUADRO_ANCHO) + 0.5) / CUADRO_ANCHO) * (ESTE - OESTE)
+    fx = np.floor(((lon - oeste) / (este - oeste)) * w).astype(int)
+    cuadro = img[np.clip(fy, 0, h - 1)][:, np.clip(fx, 0, w - 1)]
+    visible = (cuadro[..., 3] > 0) & ((fy >= 0) & (fy < h))[:, None] & ((fx >= 0) & (fx < w))[None]
+    colores, cual = np.unique(cuadro[..., :3].reshape(-1, 3), axis=0, return_inverse=True)
+    lluvia = np.array([_dbz_smn(tuple(int(v) for v in c)) >= LLUVIA_DBZ for c in colores])
+    si = visible & lluvia[cual.reshape(visible.shape)]
+    ys, xs = np.nonzero(si)
+    salida = np.zeros((ALTO, ANCHO), bool)
+    salida[ys * ALTO // CUADRO_ALTO, xs * ANCHO // CUADRO_ANCHO] = True
+    return salida
+
+
+def fijos(carpeta):
+    # Rehace FIJOS con las imágenes de la rama rma19 (`AAAAMMDD/hhmm.png`) que estén en `carpeta`.
+    import numpy as np
+    from PIL import Image
+
+    rutas = sorted(Path(carpeta).glob("*/*.png"))
+    if not rutas:
+        sys.exit(f"fijos: no hay imágenes en {carpeta}")
+    veces = sum(rma19_lluvia(r.read_bytes()).astype(np.int32) for r in rutas)
+    fijo = veces >= len(rutas) * FIJO
+    Image.fromarray(fijo).save(FIJOS, optimize=True)
+    print(f"fijos: {len(rutas)} imágenes ({rutas[0].parent.name}/{rutas[0].name} a {rutas[-1].parent.name}/"
+          f"{rutas[-1].name}), {int(fijo.sum())} celdas fijas", file=sys.stderr)
+
+
 def _corrida_para(hora):
     # La última corrida (00/06/12/18) que ya estaba publicada ESPERA_CORRIDA_H antes de la hora, con su plazo; si esa no
     # tiene el archivo, la anterior.
@@ -437,12 +534,34 @@ def _corrida_para(hora):
     return None, None
 
 
+def _lista(url):
+    # La lista de un radar (`{"AAAAMMDD": ["HHMMSS.png", …]}`, en UTC) como {hora: ruta}. Sin la lista (el radar o la
+    # página caídos) no falla: queda vacía y sus horas se miden en otra vuelta, mientras sigan en ella. Queda como aviso
+    # en la corrida (con el 403 de Contingencias, el de su lista sale en cada vuelta).
+    try:
+        lista = json.loads(pedir(url, tiempo=30) or b"{}")
+    except (ValueError, OSError) as e:
+        print(f"::warning::medir: sin la lista {url} ({e!r})", file=sys.stderr)
+        return {}
+    # Como leerLista de src/radar/cuadros.ts: la reflectividad es `HHMMSS.png` o, desde el 07/11/2026, `HHMMSS_dbz.png`
+    # (la misma imagen). Granizo y manga no van, y una hora con los dos nombres cuenta una vez (el nuevo).
+    por_hora = {}
+    for dia, pngs in (lista.items() if isinstance(lista, dict) else []):
+        for png in pngs if isinstance(pngs, list) else []:
+            if not (re.fullmatch(r"\d{8}", dia) and isinstance(png, str) and re.fullmatch(r"\d{6}(_dbz)?\.png", png)):
+                continue
+            t = dt.datetime.strptime(dia + png[:6], "%Y%m%d%H%M%S").replace(tzinfo=dt.timezone.utc)
+            if t not in por_hora or png.endswith("_dbz.png"):
+                por_hora[t] = f"{dia}/{png}"
+    return por_hora
+
+
 def medir(archivo):
     import csv
     from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
-    from pathlib import Path
 
     import numpy as np
+    from PIL import Image
 
     ruta = Path(archivo)
     filas = []
@@ -450,34 +569,21 @@ def medir(archivo):
         with ruta.open(encoding="utf-8", newline="") as f:
             # Las filas medidas con otro alcance se descartan: se vuelven a medir las que sigan en la lista del radar.
             filas = [x for x in csv.DictReader(f) if x.get("km") == str(ALCANCE_KM)]
+    for x in filas:
+        if x.get("radar") is None:  # de antes del repuesto: todas con Contingencias
+            x["radar"] = "contingencias" if x["corrida"] else ""
     hechas = {f["hora"] for f in filas}
     ahora = dt.datetime.now(dt.timezone.utc)
 
-    try:
-        lista = json.loads(pedir(f"{RADAR_API}/cuadros", tiempo=30) or b"{}")
-    except (ValueError, OSError) as e:
-        # Sin la lista (el radar o la página caídos) no falla: las horas se miden en otra vuelta, mientras sigan en ella.
-        # Queda como aviso en la corrida (con el 403 de Contingencias, acierto.csv no crece).
-        print(f"::warning::medir: sin la lista del radar ({e!r})", file=sys.stderr)
+    listas = {n: _lista(r["lista"]) for n, r in RADARES.items()}
+    tiempos = sorted(t for lista in listas.values() for t in lista)
+    if not tiempos:
+        print("medir: ningún radar dio imágenes", file=sys.stderr)
         return
-    # Como leerLista de src/radar/cuadros.ts: la reflectividad es `HHMMSS.png` o, desde el 07/11/2026, `HHMMSS_dbz.png`
-    # (la misma imagen). Granizo y manga no van, y una hora con los dos nombres cuenta una vez (el nuevo).
-    por_hora = {}
-    for dia, pngs in lista.items():
-        for png in pngs:
-            if not re.fullmatch(r"\d{6}(_dbz)?\.png", png):
-                continue
-            t = dt.datetime.strptime(dia + png[:6], "%Y%m%d%H%M%S").replace(tzinfo=dt.timezone.utc)
-            if t not in por_hora or png.endswith("_dbz.png"):
-                por_hora[t] = f"{dia}/{png}"
-    cuadros = sorted(por_hora.items())
-    if not cuadros:
-        print("medir: la lista del radar vino vacía", file=sys.stderr)
-        return
-    # Desde la primera hora entera de la lista hasta la última terminada hace 10 min (las imágenes llegan con atraso).
-    primera = cuadros[0][0]
-    h = primera.replace(minute=0, second=0) + (dt.timedelta(hours=1) if primera.minute >= 2 else dt.timedelta())
-    ultima = (ahora - dt.timedelta(minutes=70)).replace(minute=0, second=0, microsecond=0)
+    # Desde la primera hora entera de las listas hasta la última terminada hace 40 min: las imágenes llegan con atraso
+    # (las del repuesto, hasta ~40 min después de su hora).
+    h = tiempos[0].replace(minute=0, second=0) + (dt.timedelta(hours=1) if tiempos[0].minute >= 2 else dt.timedelta())
+    ultima = (ahora - dt.timedelta(minutes=100)).replace(minute=0, second=0, microsecond=0)
     horas = []
     while h <= ultima:
         if nombre(h) not in hechas:
@@ -488,14 +594,24 @@ def medir(archivo):
         print("medir: nada nuevo", file=sys.stderr)
         return
 
-    adentro, caja, total, dentro = _alcance()
-    caja_ok = dentro[caja] & adentro  # celdas que cuentan
+    # Por radar, las celdas que cuentan y la caja de cada una. Al repuesto se le sacan sus ecos fijos.
+    fuera = np.asarray(Image.open(FIJOS)).astype(bool)
+    alcances = {n: _alcance(r["centro"], fuera if n == "rma19" else None) for n, r in RADARES.items()}
 
-    def bajar(r):
+    def bajar(url, mitad):
         try:
-            return _radar_lluvia(pedir(f"{RADAR_API}/cuadro?ruta={r}&filtro={FILTRO}", tiempo=30))
+            return _radar_lluvia(pedir(url, tiempo=30), mitad)
         except Exception:
             return None
+
+    # Cada hora va con el primer radar que tenga imágenes suficientes; sin ninguno, se reintenta hasta PARADO_H y
+    # después queda sin radar (con las imágenes del que más tuvo).
+    elegido = {}
+    for h in horas:
+        por_radar = {n: [r for t, r in sorted(lista.items()) if h <= t < h + dt.timedelta(hours=1)]
+                     for n, lista in listas.items()}
+        n = next((n for n in RADARES if len(por_radar[n]) >= RADARES[n]["minimo"]), None)
+        elegido[h] = (n, por_radar[n] if n else max(por_radar.values(), key=len))
 
     # Un archivo del WRF que no se pudo leer (o el S3 que no contesta) no tira la medición entera: esa hora se
     # reintenta en otra vuelta y, pasadas PARADO_H, queda sin corrida.
@@ -506,30 +622,36 @@ def medir(archivo):
             print(f"medir: sin la corrida de {nombre(h)} ({e!r})", file=sys.stderr)
             return None, None
 
-    corridas = {h: corrida_o_nada(h) for h in horas}
+    corridas = {h: corrida_o_nada(h) if elegido[h][0] else (None, None) for h in horas}
     archivos = sorted({(c, p) for c, plazo in corridas.values() if c for p in (plazo - 1, plazo)})
     with ProcessPoolExecutor(4) as ex:
         wrf = {cp: pp for cp, pp in zip(archivos, ex.map(_leer_pp, archivos)) if pp is not None}
 
     nuevas = []
     for h in horas:
-        rutas = [r for t, r in cuadros if h <= t < h + dt.timedelta(hours=1)]
+        n, rutas = elegido[h]
         vieja = ahora - h > dt.timedelta(hours=PARADO_H + 1)
-        fila = {"hora": nombre(h), "corrida": "", "plazo": "", "cuadros": len(rutas), "km": ALCANCE_KM}
+        fila = {"hora": nombre(h), "corrida": "", "plazo": "", "cuadros": len(rutas), "km": ALCANCE_KM, "radar": ""}
+        if n is None and not vieja:
+            continue  # ningún radar con imágenes suficientes (el repuesto puede darlas tarde): se reintenta
         c, plazo = corridas[h]
         if c is not None and not {(c, plazo - 1), (c, plazo)} <= wrf.keys():
             if not vieja:
                 continue  # un archivo del WRF no se pudo leer: se reintenta
             c = None
-        if len(rutas) >= MIN_CUADROS and c is None and not vieja:
+        if n and c is None and not vieja:
             continue  # todavía no está la corrida en S3: se reintenta
-        if len(rutas) >= MIN_CUADROS and c is not None:
+        if n and c is not None:
+            r = RADARES[n]
+            adentro, caja, total, dentro = alcances[n]
+            caja_ok = dentro[caja] & adentro  # celdas que cuentan
             with ThreadPoolExecutor(8) as ex:
-                imagenes = [x for x in ex.map(bajar, rutas) if x is not None]
+                imagenes = [x for x in ex.map(lambda ruta: bajar(r["imagen"].format(ruta), r["mitad"]), rutas)
+                            if x is not None]
             if len(imagenes) < len(rutas) * 0.8 and not vieja:
                 continue  # fallaron pedidos: se reintenta en la próxima vuelta
             fila["cuadros"] = len(imagenes)
-            if len(imagenes) >= MIN_CUADROS:
+            if len(imagenes) >= r["minimo"]:
                 radar = np.logical_or.reduce(imagenes) & caja_ok
                 pron = (np.maximum(wrf[(c, plazo)] - wrf[(c, plazo - 1)], 0) >= LLUVIA_MM) & caja_ok
                 en_radar = np.bincount(caja[radar], minlength=total) > 0
@@ -540,6 +662,7 @@ def medir(archivo):
                     solo_pronostico=int((en_pron & ~en_radar).sum()),
                     solo_radar=int((en_radar & ~en_pron).sum()),
                     cajas=int(dentro.sum()),
+                    radar=n,
                 )
         nuevas.append(fila)
         print(f"medir {fila}", file=sys.stderr)
@@ -564,6 +687,8 @@ if __name__ == "__main__":
     a = sys.argv[1:]
     if a[:1] == ["medir"]:
         medir(a[1])
+    elif a[:1] == ["fijos"]:
+        fijos(a[1])
     elif a[:1] == ["ver"]:
         ver(a[1], "--forzar" in a)
     elif a[:1] == ["armar"]:
@@ -571,4 +696,4 @@ if __name__ == "__main__":
         plazos = [int(x) for x in opc["--plazos"].split(",")] if "--plazos" in opc else list(PLAZOS)
         armar(a[1], opc.get("--wrf"), opc.get("--icon"), plazos, opc.get("--antes"))
     else:
-        sys.exit("uso: ver URL | armar SALIDA --wrf AAAAMMDDHH --icon AAAAMMDDHH [--antes URL] | medir acierto.csv")
+        sys.exit("uso: ver URL | armar SALIDA --wrf AAAAMMDDHH --icon AAAAMMDDHH [--antes URL] | medir acierto.csv | fijos CARPETA_RMA19")
