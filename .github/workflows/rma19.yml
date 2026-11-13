@@ -1,5 +1,6 @@
 # Cada 10 minutos guarda en la rama «rma19» las imágenes nuevas del radar del SMN en Santa Rosa (RMA19): el repuesto
-# de Radar Mendoza. Se miden 2 semanas (desde el 09/11/2026) para ver cuántas da y si acuerda con Contingencias.
+# de Radar Mendoza. Se mide desde el 09/11/2026 hasta el 08/12 para ver cuántas da y si acuerda con Contingencias: con
+# las 2 primeras semanas se arma la máscara de ecos fijos y con las 2 siguientes se prueba.
 name: RMA19
 
 on:
@@ -20,14 +21,14 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      # La medición dura 2 semanas: desde el 24/11 00:00 de Mendoza (03:00 UTC) la Action se apaga sola. Para seguir,
-      # cambiar la fecha y volver a prenderla (gh workflow enable rma19.yml)
+      # Desde el 08/12 00:00 de Mendoza (03:00 UTC) la Action se apaga sola. Para seguir, cambiar la fecha y volver a
+      # prenderla (gh workflow enable rma19.yml)
       - name: Fin de la medición
         id: fin
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if [ "$(date -u +%Y%m%d%H)" -ge 2026112403 ]; then
+          if [ "$(date -u +%Y%m%d%H)" -ge 2026120803 ]; then
             gh workflow disable rma19.yml -R "$GITHUB_REPOSITORY"
             echo "listo=1" >> "$GITHUB_OUTPUT"
           fi

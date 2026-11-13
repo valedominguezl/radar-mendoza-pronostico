@@ -25,5 +25,6 @@ Probar en la compu: `pip install -r requirements.txt` y
 **Radar de repuesto (RMA19):** otra Action (`rma19.yml`, cada 10 min) corre `bash rma19.sh rma19` y guarda en la rama
 `rma19` las imágenes del radar del SMN en Santa Rosa, Mendoza (RMA19, [SINARAME](https://radares.hidricosargentina.gob.ar/)),
 tal como salen de su caché: `AAAAMMDD/hhmm.png`, hora de Mendoza. Es el repuesto de Radar Mendoza cuando el radar de
-Contingencias no publica; se guardan 2 semanas para medir cuántas imágenes da y cuánto acuerda con Contingencias.
+Contingencias no publica; se guardan del 09/11 al 08/12 para medir cuántas imágenes da y cuánto acuerda con Contingencias (las 2 primeras
+semanas arman la máscara de ecos fijos y las 2 siguientes la prueban).
 `vueltas.csv` anota qué tramo revisó cada vuelta.
