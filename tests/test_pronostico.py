@@ -80,6 +80,27 @@ class Medir(unittest.TestCase):
         with mock.patch.object(pronostico, "pedir", lambda url, **k: b'{"20261111": ["020000.png", "020000_dbz.png"]}'):
             self.assertEqual(list(pronostico._lista("x").values()), ["20261111/020000_dbz.png"])
 
+    def test_cada_fila_dice_con_que_mascara_se_midio(self):
+        # Las filas de antes de la columna: las del repuesto se midieron con la máscara del 10/11 (la única hasta el
+        # 24/11); las de Contingencias no llevan máscara.
+        with tempfile.TemporaryDirectory() as d:
+            ruta = Path(d) / "acierto.csv"
+            ruta.write_text(
+                "hora,corrida,plazo,cuadros,ambos,solo_pronostico,solo_radar,cajas,km,radar\n"
+                "2026110600,2026110518,7,30,0,2,83,315,200,contingencias\n"
+                "2026111021,2026111012,10,6,3,8,51,289,200,rma19\n"
+                "2026111022,,,0,,,,,200,\n", encoding="utf-8")
+            filas = pronostico._leer_filas(ruta)
+        self.assertEqual([f["mascara"] for f in filas], ["", "2026-11-10", ""])
+        self.assertIn("mascara", pronostico.COLUMNAS)
+
+    def test_la_mascara_dice_su_fecha(self):
+        # Al rehacer rma19-fijos.png, MASCARA tiene que cambiar con ella (si no, las filas nuevas dirían la fecha
+        # vieja): esta prueba falla hasta actualizar las dos cosas.
+        import hashlib
+        self.assertEqual((hashlib.md5(pronostico.FIJOS.read_bytes()).hexdigest(), pronostico.MASCARA),
+                         ("96284d373aa68e86a229075406d6c666", "2026-11-10"))
+
 
 class CopiarIcon(unittest.TestCase):
     def test_copia_las_nubes_publicadas(self):

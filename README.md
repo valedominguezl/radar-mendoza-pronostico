@@ -14,9 +14,11 @@ Son pronósticos de modelos, tal como salen de cada fuente, sin cálculos propio
 `valor = desde + paso × byte`. Archivos: `wrf/{hora}-lluvia.png` e `icon/{hora}-nubes.png`.
 
 **Acierto:** en cada vuelta, `python pronostico.py medir datos/acierto.csv` suma a la planilla `acierto.csv` (rama
-`datos`) cada hora terminada: el alcance del radar (250 km) en cajas de 20 km, y en cuántas vieron lluvia los dos (el
+`datos`) cada hora terminada: el alcance del radar (200 km) en cajas de 20 km, y en cuántas vieron lluvia los dos (el
 WRF de la última corrida publicada una hora antes, 0,5 mm o más, y el radar ya limpio de ruido, «Débil» o más), solo el
-pronóstico o solo el radar. Hora en UTC, la de su comienzo. Solo mide: no corrige el modelo.
+pronóstico o solo el radar. Hora en UTC, la de su comienzo. Solo mide: no corrige el modelo. `radar` dice con cuál se
+midió (`contingencias` o el repuesto `rma19`) y `mascara`, para el repuesto, la fecha de los ecos fijos que se le
+sacaron (`rma19-fijos.png`).
 
 Probar en la compu: `pip install -r requirements.txt` y
 `python pronostico.py armar sitio --wrf AAAAMMDDHH --icon AAAAMMDDHH --plazos 0,1,24`. Pruebas:

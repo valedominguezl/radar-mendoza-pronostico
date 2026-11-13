@@ -372,6 +372,10 @@ RADAR_API = "https://radar-mendoza.vercel.app/api"
 FILTRO = 3  # La versión del filtro de ruido que pide la página (FILTRO en src/radar/cuadros.ts).
 REPUESTO = 1  # La versión del repuesto que pide la página (REPUESTO en src/radar/cuadros.ts).
 FIJOS = Path(__file__).with_name("rma19-fijos.png")
+# La fecha de FIJOS: va en la columna «mascara» de cada hora medida con el repuesto, para saber cuáles se midieron con
+# una máscara vieja (la del 10/11 salió de 1,5 días de registro y deja pasar ruido). Al rehacer FIJOS, cambiarla
+# (test_la_mascara_dice_su_fecha lo recuerda).
+MASCARA = "2026-11-10"
 # Por radar, en el orden en que se eligen: dónde está, sus URL y cuántas imágenes por hora hacen falta (la mitad).
 RADARES = {
     # ~30 imágenes por hora, ya limpias de ruido: la mitad de arriba de /api/cuadro.
@@ -397,7 +401,8 @@ ALCANCE_KM = 200
 ESPERA_CORRIDA_H = 4
 PARADO_H = 6  # una hora sin imágenes suficientes o que no bajaron se reintenta hasta esto; después queda sin radar.
 TOPE_HORAS = 30  # por vuelta, para que una vuelta no se alargue.
-COLUMNAS = ["hora", "corrida", "plazo", "cuadros", "ambos", "solo_pronostico", "solo_radar", "cajas", "km", "radar"]
+COLUMNAS = ["hora", "corrida", "plazo", "cuadros", "ambos", "solo_pronostico", "solo_radar", "cajas", "km", "radar",
+            "mascara"]
 
 
 def _alcance(centro, fuera=None):
@@ -556,6 +561,22 @@ def _lista(url):
     return por_hora
 
 
+def _leer_filas(ruta):
+    import csv
+
+    if not ruta.exists():
+        return []
+    with ruta.open(encoding="utf-8", newline="") as f:
+        # Las filas medidas con otro alcance se descartan: se vuelven a medir las que sigan en la lista del radar.
+        filas = [x for x in csv.DictReader(f) if x.get("km") == str(ALCANCE_KM)]
+    for x in filas:
+        if x.get("radar") is None:  # de antes del repuesto: todas con Contingencias
+            x["radar"] = "contingencias" if x["corrida"] else ""
+        if x.get("mascara") is None:  # de antes de la columna: el repuesto, con la primera máscara
+            x["mascara"] = "2026-11-10" if x["radar"] == "rma19" else ""
+    return filas
+
+
 def medir(archivo):
     import csv
     from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
@@ -564,14 +585,7 @@ def medir(archivo):
     from PIL import Image
 
     ruta = Path(archivo)
-    filas = []
-    if ruta.exists():
-        with ruta.open(encoding="utf-8", newline="") as f:
-            # Las filas medidas con otro alcance se descartan: se vuelven a medir las que sigan en la lista del radar.
-            filas = [x for x in csv.DictReader(f) if x.get("km") == str(ALCANCE_KM)]
-    for x in filas:
-        if x.get("radar") is None:  # de antes del repuesto: todas con Contingencias
-            x["radar"] = "contingencias" if x["corrida"] else ""
+    filas = _leer_filas(ruta)
     hechas = {f["hora"] for f in filas}
     ahora = dt.datetime.now(dt.timezone.utc)
 
@@ -631,7 +645,8 @@ def medir(archivo):
     for h in horas:
         n, rutas = elegido[h]
         vieja = ahora - h > dt.timedelta(hours=PARADO_H + 1)
-        fila = {"hora": nombre(h), "corrida": "", "plazo": "", "cuadros": len(rutas), "km": ALCANCE_KM, "radar": ""}
+        fila = {"hora": nombre(h), "corrida": "", "plazo": "", "cuadros": len(rutas), "km": ALCANCE_KM, "radar": "",
+                "mascara": ""}
         if n is None and not vieja:
             continue  # ningún radar con imágenes suficientes (el repuesto puede darlas tarde): se reintenta
         c, plazo = corridas[h]
@@ -663,6 +678,7 @@ def medir(archivo):
                     solo_radar=int((en_radar & ~en_pron).sum()),
                     cajas=int(dentro.sum()),
                     radar=n,
+                    mascara=MASCARA if n == "rma19" else "",
                 )
         nuevas.append(fila)
         print(f"medir {fila}", file=sys.stderr)
